@@ -76,6 +76,11 @@ class LocalStorageBackend(StorageBackend):
                 return pd.DataFrame()
             
             df = pd.read_parquet(full_path)
+            
+            # Map daqid to asset_id if daqid exists (for TimescaleDB data structure)
+            if 'daqid' in df.columns and 'asset_id' not in df.columns:
+                df['asset_id'] = df['daqid']
+            
             logger.debug(f"Read {len(df)} rows from {file_path}")
             return df
             

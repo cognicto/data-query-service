@@ -55,13 +55,17 @@ class SensorDataReader:
             
             for file_path in files:
                 if file_path.endswith('.parquet'):
-                    # Parse file path: asset_id/yyyy/mm/dd/hh/sensor_name.parquet
+                    # Parse file path: asset_id/yyyy/mm/dd/hh/tablename_YYYYMMDD_HH.parquet
                     parts = file_path.split('/')
                     if len(parts) >= 6:
                         file_asset_id = parts[0] if parts[0] else parts[1]  # Handle leading slash
                         if file_asset_id and (asset_id is None or file_asset_id == asset_id):
                             sensor_file = parts[-1]  # Last part is filename
-                            sensor_name = sensor_file.replace('.parquet', '')
+                            # Extract table name from filename: tablename_YYYYMMDD_HH.parquet
+                            if '_' in sensor_file:
+                                sensor_name = sensor_file.rsplit('_', 2)[0]  # Get everything before last two underscores
+                            else:
+                                sensor_name = sensor_file.replace('.parquet', '')
                             sensors.add(sensor_name)
             
             return sorted(list(sensors))
@@ -151,7 +155,11 @@ class SensorDataReader:
                     day = int(parts[-3])
                     hour = int(parts[-2])
                     sensor_file = parts[-1]
-                    sensor_name = sensor_file.replace('.parquet', '')
+                    # Extract table name from filename: tablename_YYYYMMDD_HH.parquet
+                    if '_' in sensor_file:
+                        sensor_name = sensor_file.rsplit('_', 2)[0]  # Get everything before last two underscores
+                    else:
+                        sensor_name = sensor_file.replace('.parquet', '')
                     
                     # Filter by asset_id
                     if asset_ids and asset_id not in asset_ids:
@@ -246,7 +254,12 @@ class SensorDataReader:
                 if len(parts) >= 6:
                     try:
                         asset_id = parts[0] if parts[0] else parts[1]
-                        sensor_name = parts[-1].replace('.parquet', '')
+                        sensor_file = parts[-1]
+                        # Extract table name from filename: tablename_YYYYMMDD_HH.parquet
+                        if '_' in sensor_file:
+                            sensor_name = sensor_file.rsplit('_', 2)[0]  # Get everything before last two underscores
+                        else:
+                            sensor_name = sensor_file.replace('.parquet', '')
                         
                         sensor_counts[sensor_name] = sensor_counts.get(sensor_name, 0) + 1
                         asset_counts[asset_id] = asset_counts.get(asset_id, 0) + 1

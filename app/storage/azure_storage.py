@@ -10,7 +10,7 @@ from datetime import datetime
 import concurrent.futures
 from threading import Lock
 
-from azure.storage.blob import BlobServiceClient, BlobClient
+from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
 from azure.core.exceptions import AzureError, ResourceNotFoundError
 
 from app.config import AzureConfig
@@ -25,14 +25,41 @@ class AzureStorageBackend(StorageBackend):
     def __init__(self, config: AzureConfig):
         """Initialize Azure storage backend."""
         self.config = config
+        self.container_client = None
         
-        if not config.storage_account or not config.storage_key:
-            raise ValueError("Azure storage account and key are required")
-        
-        self.blob_service_client = BlobServiceClient(
-            account_url=f"https://{config.storage_account}.blob.core.windows.net",
-            credential=config.storage_key
-        )
+        # Check if using new blob_endpoint + sas_token pattern
+        if config.blob_endpoint and config.sas_token:
+            # Clean up SAS token (remove leading ?)
+            sas_token = config.sas_token.lstrip('?')
+            
+            # Create container URL with SAS token
+            container_url = f"{config.blob_endpoint}/{config.container_name}?{sas_token}"
+            
+            # Use ContainerClient directly with SAS token
+            self.container_client = ContainerClient.from_container_url(container_url)
+            
+            # Also create BlobServiceClient for compatibility
+            self.blob_service_client = BlobServiceClient(
+                account_url=f"{config.blob_endpoint}?{sas_token}"
+            )
+        # Fall back to old method using storage_account and storage_key
+        elif config.storage_account and config.storage_key:
+            # Check if using SAS token (starts with 'sv=')
+            if config.storage_key and config.storage_key.startswith('sv='):
+                # Using SAS token
+                self.blob_service_client = BlobServiceClient(
+                    account_url=f"https://{config.storage_account}.blob.core.windows.net?{config.storage_key}"
+                )
+            else:
+                # Using storage key
+                self.blob_service_client = BlobServiceClient(
+                    account_url=f"https://{config.storage_account}.blob.core.windows.net",
+                    credential=config.storage_key
+                )
+            
+            self.container_client = self.blob_service_client.get_container_client(config.container_name)
+        else:
+            raise ValueError("Azure credentials not configured - either provide blob_endpoint + sas_token or storage_account + storage_key")
         
         self.container_name = config.container_name
         self._file_cache = {}
@@ -94,6 +121,10 @@ class AzureStorageBackend(StorageBackend):
                 blob_data.readinto(buffer)
                 buffer.seek(0)
                 df = pd.read_parquet(buffer)
+            
+            # Map daqid to asset_id if daqid exists (for TimescaleDB data structure)
+            if 'daqid' in df.columns and 'asset_id' not in df.columns:
+                df['asset_id'] = df['daqid']
             
             logger.debug(f"Read {len(df)} rows from {file_path}")
             return df

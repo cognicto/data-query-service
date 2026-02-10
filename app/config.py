@@ -30,9 +30,11 @@ class AggregationMethod(str, Enum):
 @dataclass
 class AzureConfig:
     """Azure Blob Storage configuration."""
-    storage_account: str
-    storage_key: str
-    container_name: str
+    storage_account: str = ""
+    storage_key: str = ""
+    blob_endpoint: str = ""  # Full blob endpoint URL
+    sas_token: str = ""  # SAS token (with or without leading ?)
+    container_name: str = ""
     connection_timeout: int = 30
     retry_attempts: int = 3
     max_workers: int = 8
@@ -108,6 +110,8 @@ def load_config() -> AppConfig:
     azure_config = AzureConfig(
         storage_account=os.getenv("AZURE_STORAGE_ACCOUNT", ""),
         storage_key=os.getenv("AZURE_STORAGE_KEY", ""),
+        blob_endpoint=os.getenv("AZURE_BLOB_ENDPOINT", ""),
+        sas_token=os.getenv("AZURE_SAS_TOKEN", ""),
         container_name=os.getenv("AZURE_CONTAINER_NAME", "sensor-data-cold-storage"),
         connection_timeout=int(os.getenv("AZURE_CONNECTION_TIMEOUT", "30")),
         retry_attempts=int(os.getenv("AZURE_RETRY_ATTEMPTS", "3")),
