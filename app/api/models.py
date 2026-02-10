@@ -10,70 +10,49 @@ from enum import Enum
 
 class AggregationMethod(str, Enum):
     """Supported aggregation methods."""
+    avg = "avg"
     min = "min" 
     max = "max"
-    mean = "mean"  # Changed from avg to mean for clarity
+    last = "last"
+    first = "first"
+    count = "count"
+    sum = "sum"
 
 
-class RawDataRequest(BaseModel):
-    """Request model for raw sensor data queries."""
-    start_date: datetime = Field(..., description="Start date (inclusive) in ISO 8601 format")
-    end_date: datetime = Field(..., description="End date (exclusive) in ISO 8601 format")
-    sensor_types: List[str] = Field(..., description="List of sensor types (e.g., quad_ch1, quad_ch2)", min_items=1)
+class QueryRequest(BaseModel):
+    """Request model for sensor data queries."""
+    sensors: List[str] = Field(..., description="List of sensor names", min_items=1)
+    start_time: datetime = Field(..., description="Start time (inclusive) in ISO 8601 format")
+    end_time: datetime = Field(..., description="End time (exclusive) in ISO 8601 format")
+    asset_ids: Optional[List[str]] = Field(None, description="List of asset IDs to filter by")
+    interval_ms: Optional[int] = Field(None, description="Interval between data points in milliseconds", gt=0)
+    max_datapoints: Optional[int] = Field(None, description="Maximum number of data points to return", gt=0)
+    aggregation: Optional[AggregationMethod] = Field(None, description="Aggregation method")
     
-    @validator('end_date')
+    @validator('end_time')
     def validate_date_range(cls, v, values):
-        if 'start_date' in values and v <= values['start_date']:
-            raise ValueError('end_date must be after start_date')
+        if 'start_time' in values and v <= values['start_time']:
+            raise ValueError('end_time must be after start_time')
         return v
 
 
-class AggregatedDataRequest(BaseModel):
-    """Request model for aggregated sensor data queries."""
-    start_date: datetime = Field(..., description="Start date (inclusive) in ISO 8601 format")
-    end_date: datetime = Field(..., description="End date (exclusive) in ISO 8601 format")
-    sensor_types: List[str] = Field(..., description="List of sensor types (e.g., quad_ch1, quad_ch2)", min_items=1)
-    interval_ms: Optional[int] = Field(None, description="Interval between data points in milliseconds (auto-calculated if not provided)", gt=0)
-    aggregation_type: AggregationMethod = Field(..., description="Aggregation method: min, max, or mean")
-    
-    @validator('end_date')
-    def validate_date_range(cls, v, values):
-        if 'start_date' in values and v <= values['start_date']:
-            raise ValueError('end_date must be after start_date')
-        return v
-
-
-class DataPoint(BaseModel):
-    """Single sensor data point."""
-    timestamp: datetime
-    sensor_type: str
-    asset_id: Optional[str] = None
-    value: Optional[float] = None
-    # Additional fields will be included dynamically
+class QueryResponse(BaseModel):
+    """Response model for sensor data queries."""
+    data: List[Dict[str, Any]] = Field(..., description="Sensor data results")
+    metadata: QueryMetadata = Field(..., description="Query execution metadata")
+    count: int = Field(..., description="Number of data points returned")
 
 
 class QueryMetadata(BaseModel):
     """Metadata about query execution."""
-    total_data_points: int = Field(..., description="Total number of data points in response")
-    truncated: bool = Field(..., description="Whether results were truncated due to max_datapoints")
-    actual_end_date: Optional[datetime] = Field(None, description="Actual end date if truncated")
-    max_datapoints_limit: int = Field(..., description="Maximum datapoints limit applied")
-    interval_ms_used: Optional[int] = Field(None, description="Actual interval used (ms)")
     cache_hit: bool = Field(..., description="Whether result was served from cache")
-    execution_time_ms: float = Field(..., description="Query execution time in milliseconds")
     tier_used: str = Field(..., description="Storage tier used (raw/aggregated/daily)")
+    execution_time_ms: float = Field(..., description="Query execution time in milliseconds")
+    truncated: bool = Field(..., description="Whether results were truncated due to max_datapoints")
+    actual_end_time: Optional[datetime] = Field(None, description="Actual end time if truncated")
+    original_datapoints: Optional[int] = Field(None, description="Original number of datapoints before truncation")
 
 
-class RawDataResponse(BaseModel):
-    """Response model for raw sensor data queries."""
-    data: List[Dict[str, Any]] = Field(..., description="Raw sensor data (1-second interval)")
-    metadata: QueryMetadata = Field(..., description="Query execution metadata")
-
-
-class AggregatedDataResponse(BaseModel):
-    """Response model for aggregated sensor data queries."""
-    data: List[Dict[str, Any]] = Field(..., description="Aggregated sensor data")
-    metadata: QueryMetadata = Field(..., description="Query execution metadata")
 
 
 class SensorInfo(BaseModel):
@@ -108,9 +87,10 @@ class AssetListResponse(BaseModel):
 
 class TimeRangeResponse(BaseModel):
     """Response model for time range queries."""
-    sensor_types: List[str] = Field(..., description="Sensor types queried")
-    min_date: Optional[datetime] = Field(None, description="Earliest available data")
-    max_date: Optional[datetime] = Field(None, description="Latest available data") 
+    sensors: List[str] = Field(..., description="Sensors queried")
+    asset_ids: Optional[List[str]] = Field(None, description="Asset IDs queried")
+    min_time: Optional[datetime] = Field(None, description="Earliest available data")
+    max_time: Optional[datetime] = Field(None, description="Latest available data") 
     duration_hours: Optional[float] = Field(None, description="Total duration in hours")
 
 

@@ -9,7 +9,7 @@ import time
 
 from fastapi import FastAPI, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import pandas as pd
 
 from app.config import AppConfig, AggregationMethod
@@ -278,6 +278,50 @@ def create_app(config: AppConfig, engine: SmartQueryEngine) -> FastAPI:
         except Exception as e:
             logger.error(f"Failed to clear cache: {e}")
             raise HTTPException(status_code=500, detail="Failed to clear cache")
+    
+    @app.post("/api/v1/aggregation/rebuild", response_model=SuccessResponse)
+    async def rebuild_aggregation(
+        sensors: Optional[str] = Query(None, description="Comma-separated sensor names to rebuild"),
+        start_date: Optional[str] = Query(None, description="Start date for rebuild (YYYY-MM-DD)"),
+        end_date: Optional[str] = Query(None, description="End date for rebuild (YYYY-MM-DD)"),
+        engine: SmartQueryEngine = Depends(get_query_engine)
+    ):
+        """Rebuild aggregated data tiers."""
+        try:
+            from app.aggregation.rebuilder import AggregationRebuilder
+            
+            rebuilder = AggregationRebuilder(engine)
+            
+            sensor_list = None
+            if sensors:
+                sensor_list = [s.strip() for s in sensors.split(',')]
+            
+            start_time = None
+            end_time = None
+            if start_date:
+                start_time = datetime.strptime(start_date, '%Y-%m-%d')
+            if end_date:
+                end_time = datetime.strptime(end_date, '%Y-%m-%d')
+            
+            success = rebuilder.rebuild_aggregated_data(
+                sensors=sensor_list,
+                start_time=start_time,
+                end_time=end_time
+            )
+            
+            if success:
+                return SuccessResponse(
+                    message="Aggregation rebuild completed successfully",
+                    timestamp=datetime.utcnow()
+                )
+            else:
+                raise HTTPException(status_code=500, detail="Aggregation rebuild failed")
+                
+        except ImportError:
+            raise HTTPException(status_code=501, detail="Aggregation rebuild not implemented")
+        except Exception as e:
+            logger.error(f"Failed to rebuild aggregation: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to rebuild aggregation: {str(e)}")
     
     @app.get("/api/v1/stats", response_model=StatsResponse)
     async def get_stats(engine: SmartQueryEngine = Depends(get_query_engine)):
