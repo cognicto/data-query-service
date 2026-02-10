@@ -36,13 +36,6 @@ class QueryRequest(BaseModel):
         return v
 
 
-class QueryResponse(BaseModel):
-    """Response model for sensor data queries."""
-    data: List[Dict[str, Any]] = Field(..., description="Sensor data results")
-    metadata: QueryMetadata = Field(..., description="Query execution metadata")
-    count: int = Field(..., description="Number of data points returned")
-
-
 class QueryMetadata(BaseModel):
     """Metadata about query execution."""
     cache_hit: bool = Field(..., description="Whether result was served from cache")
@@ -52,6 +45,12 @@ class QueryMetadata(BaseModel):
     actual_end_time: Optional[datetime] = Field(None, description="Actual end time if truncated")
     original_datapoints: Optional[int] = Field(None, description="Original number of datapoints before truncation")
 
+
+class QueryResponse(BaseModel):
+    """Response model for sensor data queries."""
+    data: List[Dict[str, Any]] = Field(..., description="Sensor data results")
+    metadata: QueryMetadata = Field(..., description="Query execution metadata")
+    count: int = Field(..., description="Number of data points returned")
 
 
 
