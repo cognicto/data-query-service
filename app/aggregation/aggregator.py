@@ -39,8 +39,21 @@ class DataAggregator:
                 logger.warning("No timestamp column found for aggregation")
                 return df
             
+            # Create a clean copy and ensure consistent timestamp format
             df = df.copy()
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            # Handle different timestamp formats consistently
+            if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+                df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
+            else:
+                # Ensure timezone-aware timestamps are consistent
+                if df['timestamp'].dt.tz is None:
+                    df['timestamp'] = df['timestamp'].dt.tz_localize('UTC')
+                else:
+                    df['timestamp'] = df['timestamp'].dt.tz_convert('UTC')
+            
+            # Drop any rows with invalid timestamps
+            df = df.dropna(subset=['timestamp'])
             
             # Create time buckets
             interval_str = f'{interval_ms}ms'
@@ -78,6 +91,8 @@ class DataAggregator:
             
         except Exception as e:
             logger.error(f"Error in aggregation: {e}")
+            logger.debug(f"DataFrame dtypes: {df.dtypes if 'df' in locals() else 'N/A'}")
+            logger.debug(f"DataFrame shape: {df.shape if 'df' in locals() else 'N/A'}")
             return df
     
     def downsample_to_max_points(self, df: pd.DataFrame, max_datapoints: int,
@@ -87,6 +102,15 @@ class DataAggregator:
             return df
         
         try:
+            # Ensure consistent timestamp format before downsampling
+            if 'timestamp' in df.columns:
+                df = df.copy()
+                if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
+                elif df['timestamp'].dt.tz is None:
+                    df['timestamp'] = df['timestamp'].dt.tz_localize('UTC')
+                else:
+                    df['timestamp'] = df['timestamp'].dt.tz_convert('UTC')
             # Calculate required interval to achieve max_datapoints
             if 'timestamp' not in df.columns:
                 # If no timestamp, just take evenly spaced samples
@@ -300,6 +324,40 @@ class SmartAggregationEngine:
                 'interval_ms': optimization['interval_ms'],
                 'original_points': len(df),
                 'final_points': len(result)
+            }
+        
+        return result
+    
+    def apply_exact_interval_aggregation(self, df: pd.DataFrame, requested_interval_ms: int,
+                                       aggregation_method: AggregationMethod, 
+                                       max_datapoints: int) -> pd.DataFrame:
+        """
+        Apply aggregation with exact interval as requested by user.
+        Used for aggregated API to respect user's explicit interval choice.
+        """
+        if df.empty:
+            return df
+        
+        logger.debug(f"Applying exact interval aggregation: {requested_interval_ms}ms, method: {aggregation_method}")
+        
+        # ALWAYS use the exact interval requested by the user
+        result = self.aggregator.aggregate_by_interval(df, requested_interval_ms, aggregation_method)
+        
+        # Only apply downsampling if we exceed max_datapoints AFTER aggregation
+        if len(result) > max_datapoints:
+            logger.debug(f"Downsampling from {len(result)} to {max_datapoints} points after aggregation")
+            result = self.aggregator.downsample_to_max_points(
+                result, max_datapoints, aggregation_method
+            )
+        
+        # Add metadata about exact aggregation applied
+        if hasattr(result, 'attrs'):
+            result.attrs['exact_aggregation_applied'] = {
+                'method': aggregation_method.value,
+                'requested_interval_ms': requested_interval_ms,
+                'original_points': len(df),
+                'final_points': len(result),
+                'downsampling_applied': len(result) < len(df)
             }
         
         return result

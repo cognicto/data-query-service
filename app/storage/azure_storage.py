@@ -23,50 +23,35 @@ class AzureStorageBackend(StorageBackend):
     """Azure Blob Storage backend for reading sensor data."""
     
     def __init__(self, config: AzureConfig):
-        """Initialize Azure storage backend."""
+        """Initialize Azure storage backend with SAS token authentication only."""
         self.config = config
-        self.container_client = None
         
-        # Check if using new blob_endpoint + sas_token pattern
-        if config.blob_endpoint and config.sas_token:
-            # Clean up SAS token (remove leading ?)
-            sas_token = config.sas_token.lstrip('?')
-            
-            # Create container URL with SAS token
-            container_url = f"{config.blob_endpoint}/{config.container_name}?{sas_token}"
-            
-            # Use ContainerClient directly with SAS token
-            self.container_client = ContainerClient.from_container_url(container_url)
-            
-            # Also create BlobServiceClient for compatibility
-            self.blob_service_client = BlobServiceClient(
-                account_url=f"{config.blob_endpoint}?{sas_token}"
+        # Validate required SAS token configuration
+        if not config.blob_endpoint or not config.sas_token or not config.container_name:
+            raise ValueError(
+                "Azure SAS token authentication requires: AZURE_BLOB_ENDPOINT, AZURE_SAS_TOKEN, and AZURE_CONTAINER_NAME"
             )
-        # Fall back to old method using storage_account and storage_key
-        elif config.storage_account and config.storage_key:
-            # Check if using SAS token (starts with 'sv=')
-            if config.storage_key and config.storage_key.startswith('sv='):
-                # Using SAS token
-                self.blob_service_client = BlobServiceClient(
-                    account_url=f"https://{config.storage_account}.blob.core.windows.net?{config.storage_key}"
-                )
-            else:
-                # Using storage key
-                self.blob_service_client = BlobServiceClient(
-                    account_url=f"https://{config.storage_account}.blob.core.windows.net",
-                    credential=config.storage_key
-                )
-            
-            self.container_client = self.blob_service_client.get_container_client(config.container_name)
-        else:
-            raise ValueError("Azure credentials not configured - either provide blob_endpoint + sas_token or storage_account + storage_key")
+        
+        # Clean up SAS token (remove leading ?)
+        sas_token = config.sas_token.lstrip('?')
+        
+        # Create container URL with SAS token
+        container_url = f"{config.blob_endpoint}/{config.container_name}?{sas_token}"
+        
+        # Use ContainerClient directly with SAS token
+        self.container_client = ContainerClient.from_container_url(container_url)
+        
+        # Create BlobServiceClient for file listing
+        self.blob_service_client = BlobServiceClient(
+            account_url=f"{config.blob_endpoint}?{sas_token}"
+        )
         
         self.container_name = config.container_name
         self._file_cache = {}
         self._cache_lock = Lock()
         self._cache_ttl = 300  # 5 minutes
         
-        logger.info(f"Initialized Azure storage backend for container: {self.container_name}")
+        logger.info(f"Initialized Azure storage backend with SAS token for container: {self.container_name}")
     
     def list_files(self, prefix: str = "") -> List[str]:
         """List files in Azure container with optional prefix filter."""
@@ -122,6 +107,15 @@ class AzureStorageBackend(StorageBackend):
                 buffer.seek(0)
                 df = pd.read_parquet(buffer)
             
+            # Handle new optimized schema that only contains timestamp/value
+            if len(df.columns) == 2 and 'timestamp' in df.columns and 'value' in df.columns:
+                # Extract metadata from file path for new schema
+                metadata = self._extract_metadata_from_path(file_path)
+                if metadata['asset_id'] != 'unknown':
+                    df['asset_id'] = metadata['asset_id']
+                if metadata['sensor_name'] != 'unknown':
+                    df['sensor_name'] = metadata['sensor_name']
+            
             # Map daqid to asset_id if daqid exists (for TimescaleDB data structure)
             if 'daqid' in df.columns and 'asset_id' not in df.columns:
                 df['asset_id'] = df['daqid']
@@ -138,6 +132,56 @@ class AzureStorageBackend(StorageBackend):
         except Exception as e:
             logger.error(f"Error reading {file_path}: {e}")
             return pd.DataFrame()
+    
+    def _extract_metadata_from_path(self, file_path: str) -> Dict[str, str]:
+        """Extract asset_id and sensor_name from file path for new optimized schema."""
+        try:
+            # Handle different path formats:
+            # Raw: asset_id/yyyy/mm/dd/hh/sensor_YYYYMMDD_HH.parquet
+            # Aggregated: aggregated/asset_id/yyyy/mm/dd/hh/sensor_minute.parquet
+            # Daily: daily/asset_id/yyyy/mm/sensor_day.parquet
+            
+            parts = file_path.split('/')
+            
+            if '/aggregated/' in file_path:
+                # aggregated/asset_id/yyyy/mm/dd/hh/sensor_minute.parquet
+                agg_parts = file_path.split('/aggregated/')
+                if len(agg_parts) > 1:
+                    remaining = agg_parts[1].split('/')
+                    if len(remaining) >= 1:
+                        asset_id = remaining[0]
+                        filename = remaining[-1]
+                        # Handle both minute and hourly aggregations
+                        sensor_name = filename.replace('_minute.parquet', '').replace('_hour.parquet', '').replace('.parquet', '')
+                        return {'asset_id': asset_id, 'sensor_name': sensor_name}
+            elif '/daily/' in file_path:
+                # daily/asset_id/yyyy/mm/sensor_day.parquet
+                daily_parts = file_path.split('/daily/')
+                if len(daily_parts) > 1:
+                    remaining = daily_parts[1].split('/')
+                    if len(remaining) >= 1:
+                        asset_id = remaining[0]
+                        filename = remaining[-1]
+                        sensor_name = filename.replace('_day.parquet', '').replace('.parquet', '')
+                        return {'asset_id': asset_id, 'sensor_name': sensor_name}
+            else:
+                # Raw data: asset_id/yyyy/mm/dd/hh/sensor_YYYYMMDD_HH.parquet
+                if len(parts) >= 6:
+                    asset_id = parts[0] if parts[0] else parts[1]  # Handle leading slash
+                    filename = parts[-1]
+                    # Extract sensor name from new format: sensor_YYYYMMDD_HH.parquet
+                    if '_' in filename:
+                        sensor_name = filename.rsplit('_', 2)[0]  # Get everything before last two underscores
+                    else:
+                        sensor_name = filename.replace('.parquet', '')
+                    return {'asset_id': asset_id, 'sensor_name': sensor_name}
+            
+            # Fallback
+            return {'asset_id': 'unknown', 'sensor_name': 'unknown'}
+            
+        except Exception as e:
+            logger.error(f"Error extracting metadata from path {file_path}: {e}")
+            return {'asset_id': 'unknown', 'sensor_name': 'unknown'}
     
     def read_multiple_parquet(self, file_paths: List[str]) -> pd.DataFrame:
         """Read multiple Parquet files in parallel."""
@@ -273,9 +317,16 @@ class AzureAggregatedReader:
         file_paths = self._get_aggregated_file_paths(sensors, start_time, end_time, asset_ids)
         return self.azure.read_multiple_parquet(file_paths)
     
+    def read_hourly_data(self, sensors: List[str], start_time: datetime, end_time: datetime,
+                        asset_ids: Optional[List[str]] = None) -> pd.DataFrame:
+        """Read hourly aggregated data from Azure."""
+        # Look for hourly aggregated files in 'aggregated' prefix
+        file_paths = self._get_hourly_file_paths(sensors, start_time, end_time, asset_ids)
+        return self.azure.read_multiple_parquet(file_paths)
+    
     def read_daily_data(self, sensors: List[str], start_time: datetime, end_time: datetime,
                        asset_ids: Optional[List[str]] = None) -> pd.DataFrame:
-        """Read daily summary data (hourly precision) from Azure."""
+        """Read daily summary data from Azure."""
         # Look for daily summary files in 'daily' prefix
         file_paths = self._get_daily_file_paths(sensors, start_time, end_time, asset_ids)
         return self.azure.read_multiple_parquet(file_paths)
@@ -283,20 +334,29 @@ class AzureAggregatedReader:
     def _get_raw_file_paths(self, sensors: List[str], start_time: datetime, end_time: datetime,
                            asset_ids: Optional[List[str]] = None) -> List[str]:
         """Get file paths for raw data tier."""
-        # Raw data is in the root level: asset_id/yyyy/mm/dd/hh/sensor.parquet
-        return self._build_hierarchical_paths("", sensors, start_time, end_time, asset_ids)
+        # Raw data: [data_prefix/]asset_id/yyyy/mm/dd/hh/sensor_YYYYMMDD_HH.parquet
+        return self._build_hierarchical_paths(self.azure.config.data_prefix, sensors, start_time, end_time, asset_ids)
     
     def _get_aggregated_file_paths(self, sensors: List[str], start_time: datetime, end_time: datetime,
                                   asset_ids: Optional[List[str]] = None) -> List[str]:
-        """Get file paths for aggregated data tier."""
-        # Aggregated data: aggregated/asset_id/yyyy/mm/dd/sensor.parquet (no hour level)
-        return self._build_hierarchical_paths("aggregated/", sensors, start_time, end_time, asset_ids, include_hour=False)
+        """Get file paths for aggregated (minute-level) data tier."""
+        # Aggregated data: [data_prefix/]aggregated/asset_id/yyyy/mm/dd/hh/sensor_minute.parquet
+        prefix = f"{self.azure.config.data_prefix}aggregated/" if self.azure.config.data_prefix else "aggregated/"
+        return self._build_hierarchical_paths(prefix, sensors, start_time, end_time, asset_ids, include_day=True, include_hour=True)
+    
+    def _get_hourly_file_paths(self, sensors: List[str], start_time: datetime, end_time: datetime,
+                              asset_ids: Optional[List[str]] = None) -> List[str]:
+        """Get file paths for hourly aggregated data tier."""
+        # Hourly data: [data_prefix/]aggregated/asset_id/yyyy/mm/dd/sensor_hour.parquet
+        prefix = f"{self.azure.config.data_prefix}aggregated/" if self.azure.config.data_prefix else "aggregated/"
+        return self._build_hierarchical_paths(prefix, sensors, start_time, end_time, asset_ids, include_day=True, include_hour=False)
     
     def _get_daily_file_paths(self, sensors: List[str], start_time: datetime, end_time: datetime,
                              asset_ids: Optional[List[str]] = None) -> List[str]:
         """Get file paths for daily data tier."""
-        # Daily data: daily/asset_id/yyyy/mm/sensor.parquet (no day level)
-        return self._build_hierarchical_paths("daily/", sensors, start_time, end_time, asset_ids, include_day=False, include_hour=False)
+        # Daily data: [data_prefix/]daily/asset_id/yyyy/mm/sensor_day.parquet
+        prefix = f"{self.azure.config.data_prefix}daily/" if self.azure.config.data_prefix else "daily/"
+        return self._build_hierarchical_paths(prefix, sensors, start_time, end_time, asset_ids, include_day=False, include_hour=False)
     
     def _build_hierarchical_paths(self, prefix: str, sensors: List[str], start_time: datetime, end_time: datetime,
                                  asset_ids: Optional[List[str]] = None, include_day: bool = True, include_hour: bool = True) -> List[str]:
@@ -341,8 +401,23 @@ class AzureAggregatedReader:
                     if include_hour:
                         path_parts.append(f"{current_time.hour:02d}")
                     
-                    path_parts.append(f"{sensor}.parquet")
+                    # Use new file naming convention based on prefix and granularity
+                    if prefix.startswith("aggregated"):
+                        if include_hour:
+                            # For minute-level aggregations: sensor_minute.parquet
+                            filename = f"{sensor}_minute.parquet"
+                        else:
+                            # For hourly aggregations: sensor_hour.parquet
+                            filename = f"{sensor}_hour.parquet"
+                    elif prefix.startswith("daily"):
+                        # For daily: sensor_day.parquet  
+                        filename = f"{sensor}_day.parquet"
+                    else:
+                        # For raw data: sensor_YYYYMMDD_HH.parquet
+                        date_str = f"{current_time.year:04d}{current_time.month:02d}{current_time.day:02d}_{current_time.hour:02d}"
+                        filename = f"{sensor}_{date_str}.parquet"
                     
+                    path_parts.append(filename)
                     file_path = "/".join(path_parts)
                     paths.append(file_path)
             

@@ -1,23 +1,23 @@
 # Sensor Data Query Service
 
-A high-performance microservice for querying sensor data with smart aggregation, multi-tier storage optimization, and intelligent caching.
+Clean, high-performance API service for querying time-series sensor data with intelligent multi-tier storage optimization and caching.
 
 ## Features
 
 - 🚀 **High Performance**: Multi-tier query optimization with automatic tier selection
-- 📊 **Smart Aggregation**: 4-step aggregation pipeline (raw → pre-aggregated → daily → cached)
+- 📊 **Smart Aggregation**: 4-tier aggregation pipeline (raw → aggregated → hourly → daily)
 - ☁️ **Dual Storage**: Supports both Azure Blob Storage and local file systems
-- ⚡ **Fast Queries**: DuckDB-powered analytics with intelligent caching
-- 🎯 **Flexible API**: Time range, sensor selection, interval control, and data point limiting
-- 📈 **Auto-Optimization**: Automatically selects optimal data tier based on query parameters
+- ⚡ **Fast Queries**: Intelligent caching with tier-based optimization
+- 🎯 **Clean API**: Simple, single-sensor endpoints for raw and aggregated data
+- 📈 **Auto-Optimization**: Automatically selects optimal data tier based on query duration
 - 🔄 **Real-time**: Supports both real-time and historical data queries
-- 🐳 **Production Ready**: Docker, Kubernetes, monitoring, and observability
+- 🐳 **Production Ready**: Docker, monitoring, and observability
 
 ## Architecture
 
 ```
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Query API     │───▶│  Smart Engine    │───▶│  Storage Tiers  │
+│   Clean APIs    │───▶│  Smart Engine    │───▶│  Storage Tiers  │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
                               │                         │
                               ▼                         │
@@ -28,9 +28,9 @@ A high-performance microservice for querying sensor data with smart aggregation,
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    4-Tier Storage System                        │
-│  Raw Data    │ Pre-Aggregated │ Daily Summary │ Smart Cache     │
-│  (1-sec)     │ (1-min avg)    │ (hourly avg)  │ (in-memory)     │
-│  Full Detail │ 4-7x faster    │ 50-100x faster│ Instant         │
+│  Raw Data    │ Aggregated   │ Hourly       │ Daily Summary      │
+│  (1-sec)     │ (1-min avg)  │ (1-hour avg) │ (daily summaries)  │
+│  < 2 hours   │ < 24 hours   │ < 7 days     │ >= 7 days          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -39,7 +39,7 @@ A high-performance microservice for querying sensor data with smart aggregation,
 ### Development
 ```bash
 git clone <repo-url>
-cd sensor-data-query-service
+cd data-query-service
 cp .env.example .env
 # Edit .env with your configuration
 make dev
@@ -51,66 +51,141 @@ make docker-build
 docker-compose up -d
 ```
 
-### API Usage
+## API Usage
+
+### Raw Data API
 ```bash
-# Basic query
-curl "http://localhost:8080/api/v1/query?start=2024-01-01T00:00:00Z&end=2024-01-01T01:00:00Z&sensors=quad_ch1,quad_ch2"
+# Get raw sensor data (1-second precision)
+curl -X POST "http://localhost:8080/api/v2/raw" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device": "0330372d-cfe9-4b44-bf3c-9906576b9fc2",
+    "sensor": "de_inboard_seal_face_temperature_degree_c",
+    "start_time": "2022-03-21T00:00:00.000Z",
+    "end_time": "2022-03-21T01:00:00.000Z"
+  }'
+```
 
-# With interval and limits
-curl "http://localhost:8080/api/v1/query?start=2024-01-01T00:00:00Z&end=2024-01-02T00:00:00Z&sensors=quad_ch1&intervalMs=60000&maxDatapoints=1000"
+### Aggregated Data API
+```bash
+# Get aggregated sensor data with specified interval
+curl -X POST "http://localhost:8080/api/v2/aggregated" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "2022-03-21T00:00:00.000Z",
+    "end_time": "2022-03-22T00:00:00.000Z",
+    "sensor": "de_inboard_seal_face_temperature_degree_c",
+    "device": "0330372d-cfe9-4b44-bf3c-9906576b9fc2",
+    "interval_ms": 240000,
+    "max_data_points": 1000,
+    "aggregation_method": "mean"
+  }'
+```
 
-# Get available sensors
-curl "http://localhost:8080/api/v1/sensors"
+### Discovery APIs
+```bash
+# List available devices
+curl "http://localhost:8080/api/v2/devices"
+
+# List available sensors
+curl "http://localhost:8080/api/v2/sensors"
+
+# API information
+curl "http://localhost:8080/api/v2/info"
 
 # Health check
-curl "http://localhost:8080/health"
+curl "http://localhost:8080/api/v2/health"
 ```
 
 ## API Endpoints
 
-### Query Endpoints
-- `GET /api/v1/query` - Query sensor data with smart optimization
-- `GET /api/v1/sensors` - List available sensors and assets
-- `GET /api/v1/assets` - List available assets
-- `GET /api/v1/timerange` - Get available time range for sensors
+### Data Endpoints
+- `POST /api/v2/raw` - Raw sensor data with 1-second precision
+- `POST /api/v2/aggregated` - Aggregated sensor data with specified intervals
 
-### Management Endpoints
-- `POST /api/v1/cache/clear` - Clear query cache
-- `POST /api/v1/aggregation/rebuild` - Rebuild aggregation tiers
-- `GET /api/v1/stats` - Get query performance statistics
+### Discovery Endpoints
+- `GET /api/v2/devices` - List available devices (with filtering)
+- `GET /api/v2/sensors` - List available sensors (with filtering)
 
 ### System Endpoints
-- `GET /health` - Health check
-- `GET /metrics` - Prometheus metrics
+- `GET /api/v2/health` - Detailed health check
+- `GET /api/v2/info` - API information and capabilities
+- `GET /health` - Simple health check
 
-## Query Parameters
+## Request/Response Format
 
-| Parameter | Type | Description | Example |
-|-----------|------|-------------|---------|
-| `start` | ISO DateTime | Start time (inclusive) | `2024-01-01T00:00:00Z` |
-| `end` | ISO DateTime | End time (exclusive) | `2024-01-01T01:00:00Z` |
-| `sensors` | Comma-separated | Sensor list | `quad_ch1,quad_ch2,quad_ch3` |
-| `assets` | Comma-separated | Asset filter (optional) | `asset_001,asset_002` |
-| `intervalMs` | Integer | Interval between points (ms) | `60000` (1 minute) |
-| `maxDatapoints` | Integer | Maximum data points | `1000` |
-| `aggregation` | String | Aggregation method | `avg,min,max,last` |
+### Raw API Request
+```json
+{
+  "device": "device_id_or_asset_id",
+  "sensor": "sensor_name", 
+  "start_time": "2022-03-21T00:00:00.000Z",
+  "end_time": "2022-03-21T01:00:00.000Z"
+}
+```
 
-## Smart Query Optimization
+### Raw API Response
+```json
+{
+  "data": [
+    [1647820800000, 85.5],
+    [1647820801000, 85.7],
+    [1647820802000, 85.9]
+  ],
+  "count": 3,
+  "device": "device_id_or_asset_id",
+  "sensor": "sensor_name",
+  "execution_time_ms": 45.2
+}
+```
 
-The service automatically selects the optimal data tier:
+### Aggregated API Request
+```json
+{
+  "start_time": "2022-03-21T00:00:00.000Z",
+  "end_time": "2022-03-22T00:00:00.000Z",
+  "sensor": "sensor_name",
+  "device": "device_id_or_asset_id",
+  "interval_ms": 240000,
+  "max_data_points": 1000,
+  "aggregation_method": "mean"
+}
+```
 
-1. **Raw Data** (1-second): For queries < 1 hour with high precision
-2. **Pre-Aggregated** (1-minute): For queries < 1 day with medium precision
-3. **Daily Summary** (1-hour): For queries > 1 day with hourly precision
-4. **Smart Cache**: For repeated queries and popular time ranges
+### Aggregated API Response
+```json
+{
+  "data": [
+    [1647820800000, 85.5],
+    [1647821040000, 85.7]
+  ],
+  "count": 2,
+  "device": "device_id_or_asset_id",
+  "sensor": "sensor_name",
+  "interval_ms": 240000,
+  "aggregation_method": "mean",
+  "truncated": false,
+  "truncated_end_time": null,
+  "execution_time_ms": 127.3
+}
+```
 
-## Performance Features
+## Tier Selection Logic
 
-- **Intelligent Caching**: LRU cache with configurable TTL
-- **Parallel Processing**: Multi-threaded data loading and aggregation
-- **Efficient Storage**: Columnar Parquet with optimized compression
-- **Query Planning**: Cost-based optimizer for tier selection
-- **Connection Pooling**: Reused connections for Azure/local storage
+The service automatically selects the optimal data tier based on query duration:
+
+- **Duration < 2h** → Raw tier (1-second precision)
+- **Duration < 24h** → Aggregated tier (1-minute averages)
+- **Duration < 7d** → Hourly tier (1-hour averages)
+- **Duration ≥ 7d** → Daily tier (daily summaries)
+
+## Truncation Logic (Aggregated API)
+
+When data points exceed `max_data_points`:
+1. **Maintains exact `interval_ms`** - Never changes the requested interval
+2. **Truncates to limit** - Keeps first N points chronologically
+3. **Provides `truncated_end_time`** - Shows exact timestamp where data was cut off
+4. **Sets `truncated: true`** - Indicates data was limited
 
 ## Configuration
 
@@ -118,11 +193,16 @@ Key environment variables:
 
 ```env
 # Storage
-AZURE_STORAGE_ACCOUNT=your_account
-AZURE_STORAGE_KEY=your_key
-AZURE_CONTAINER_NAME=sensor-data-cold-storage
-LOCAL_STORAGE_PATH=/data/raw
 STORAGE_MODE=hybrid  # azure, local, hybrid
+
+# Azure Storage - SAS Token Only (see AZURE_CONFIGURATION.md for detailed setup)
+AZURE_BLOB_ENDPOINT=https://youraccount.blob.core.windows.net
+AZURE_SAS_TOKEN=your-sas-token
+AZURE_CONTAINER_NAME=sensor-data-cold-storage
+AZURE_DATA_PREFIX=production/sensors/  # Optional directory path
+
+# Local Storage
+LOCAL_STORAGE_PATH=/data
 
 # Query Performance
 CACHE_SIZE_MB=512
@@ -136,6 +216,8 @@ API_PORT=8080
 API_WORKERS=4
 ```
 
+📚 **For detailed Azure Blob storage configuration including directory paths, authentication methods, and examples, see [AZURE_CONFIGURATION.md](./AZURE_CONFIGURATION.md)**
+
 ## Development
 
 ```bash
@@ -146,7 +228,7 @@ make install
 make run
 
 # Run tests
-make test
+python scripts/test_simplified_apis.py
 
 # Format code
 make format
@@ -155,18 +237,35 @@ make format
 make docker-build
 ```
 
-## Deployment
+## Supported Devices
 
-- **Docker Compose**: Single-node deployment with dependencies
-- **Kubernetes**: Production-ready manifests with auto-scaling
-- **Azure Container Instances**: Serverless deployment option
-- **AWS ECS**: Container deployment on AWS
+The service supports both generation devices:
 
-See [deployment/README.md](deployment/README.md) for detailed instructions.
+- **Gen1 Devices**: UUID-based device IDs (e.g., `0330372d-cfe9-4b44-bf3c-9906576b9fc2`)
+- **Gen2 Devices**: Custom device IDs (e.g., `287b1b90-f3ad-5ab6-b25e-176a1bca6f8c-NDE`)
 
-## Monitoring
+Device type is automatically detected based on the ID format.
 
-- **Health Checks**: Component-level health monitoring
-- **Metrics**: Query performance, cache hit rates, storage statistics
-- **Logging**: Structured JSON logging with query tracing
-- **Alerts**: Configurable alerts for performance and errors# data-query-service
+## Time Format Support
+
+All APIs support flexible time formats:
+
+- **ISO Strings**: `"2022-03-21T00:00:00.000Z"`
+- **Epoch Timestamps**: `1647820800000` (milliseconds)
+- **Datetime Objects**: In code/SDKs
+
+## Testing
+
+```bash
+# Test both APIs
+python scripts/test_simplified_apis.py
+
+# Test specific API
+python scripts/test_simplified_apis.py --url http://localhost:8080
+```
+
+## Documentation
+
+- **Swagger UI**: `/docs` (interactive API documentation)
+- **ReDoc**: `/redoc` (alternative API documentation)
+- **API Info**: `GET /api/v2/info` (programmatic API information)

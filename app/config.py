@@ -29,15 +29,15 @@ class AggregationMethod(str, Enum):
 
 @dataclass
 class AzureConfig:
-    """Azure Blob Storage configuration."""
-    storage_account: str = ""
-    storage_key: str = ""
-    blob_endpoint: str = ""  # Full blob endpoint URL
+    """Azure Blob Storage configuration - SAS token authentication only."""
+    blob_endpoint: str = ""  # Full blob endpoint URL (e.g., https://account.blob.core.windows.net)
     sas_token: str = ""  # SAS token (with or without leading ?)
-    container_name: str = ""
+    container_name: str = ""  # Container name (e.g., sensor-data-cold-storage)
+    data_prefix: str = ""  # Optional prefix/directory path within container (e.g., "sensor-data/")
     connection_timeout: int = 30
     retry_attempts: int = 3
     max_workers: int = 8
+    chunk_size: int = 1024 * 1024  # 1MB chunks for large file handling
 
 
 @dataclass
@@ -72,9 +72,21 @@ class CacheConfig:
 @dataclass
 class TierConfig:
     """Multi-tier storage configuration."""
-    raw_tier_max_hours: int = 24  # Use raw data for queries < 24 hours
-    aggregated_tier_max_hours: int = 168  # Use pre-aggregated for < 7 days
+    raw_tier_max_hours: int = 2  # Use raw data for queries < 2 hours
+    aggregated_tier_max_hours: int = 24  # Use minute-level aggregations for < 24 hours  
+    hourly_tier_max_hours: int = 168  # Use hourly aggregations for < 7 days
     daily_tier_threshold_hours: int = 168  # Use daily summaries for > 7 days
+
+
+@dataclass
+class DuckDBConfig:
+    """DuckDB configuration for high-performance analytics."""
+    enabled: bool = True
+    memory_limit: str = "8GB"
+    threads: int = 8
+    min_datapoints_threshold: int = 1000
+    enable_parallel_query: bool = True
+    enable_vectorized_exec: bool = True
 
 
 @dataclass
@@ -98,6 +110,7 @@ class AppConfig:
     cache: CacheConfig
     tiers: TierConfig
     api: APIConfig
+    duckdb: DuckDBConfig
 
 
 def load_config() -> AppConfig:
@@ -106,16 +119,16 @@ def load_config() -> AppConfig:
     # Storage mode
     storage_mode = StorageMode(os.getenv("STORAGE_MODE", "hybrid"))
     
-    # Azure configuration
+    # Azure configuration - SAS token only
     azure_config = AzureConfig(
-        storage_account=os.getenv("AZURE_STORAGE_ACCOUNT", ""),
-        storage_key=os.getenv("AZURE_STORAGE_KEY", ""),
         blob_endpoint=os.getenv("AZURE_BLOB_ENDPOINT", ""),
         sas_token=os.getenv("AZURE_SAS_TOKEN", ""),
         container_name=os.getenv("AZURE_CONTAINER_NAME", "sensor-data-cold-storage"),
+        data_prefix=os.getenv("AZURE_DATA_PREFIX", ""),
         connection_timeout=int(os.getenv("AZURE_CONNECTION_TIMEOUT", "30")),
         retry_attempts=int(os.getenv("AZURE_RETRY_ATTEMPTS", "3")),
-        max_workers=int(os.getenv("AZURE_MAX_WORKERS", "8"))
+        max_workers=int(os.getenv("AZURE_MAX_WORKERS", "8")),
+        chunk_size=int(os.getenv("AZURE_CHUNK_SIZE", str(1024 * 1024)))
     )
     
     # Local storage configuration
@@ -146,8 +159,9 @@ def load_config() -> AppConfig:
     
     # Tier configuration
     tier_config = TierConfig(
-        raw_tier_max_hours=int(os.getenv("RAW_TIER_MAX_HOURS", "24")),
-        aggregated_tier_max_hours=int(os.getenv("AGGREGATED_TIER_MAX_HOURS", "168")),
+        raw_tier_max_hours=int(os.getenv("RAW_TIER_MAX_HOURS", "2")),
+        aggregated_tier_max_hours=int(os.getenv("AGGREGATED_TIER_MAX_HOURS", "24")),
+        hourly_tier_max_hours=int(os.getenv("HOURLY_TIER_MAX_HOURS", "168")),
         daily_tier_threshold_hours=int(os.getenv("DAILY_TIER_THRESHOLD_HOURS", "168"))
     )
     
@@ -165,6 +179,16 @@ def load_config() -> AppConfig:
         rate_limit=os.getenv("API_RATE_LIMIT", "100/minute")
     )
     
+    # DuckDB configuration
+    duckdb_config = DuckDBConfig(
+        enabled=os.getenv("ENABLE_DUCKDB", "true").lower() == "true",
+        memory_limit=os.getenv("DUCKDB_MEMORY_LIMIT", "8GB"),
+        threads=int(os.getenv("DUCKDB_THREADS", "8")),
+        min_datapoints_threshold=int(os.getenv("DUCKDB_MIN_DATAPOINTS_THRESHOLD", "1000")),
+        enable_parallel_query=os.getenv("DUCKDB_ENABLE_PARALLEL", "true").lower() == "true",
+        enable_vectorized_exec=os.getenv("DUCKDB_ENABLE_VECTORIZED", "true").lower() == "true"
+    )
+    
     return AppConfig(
         storage_mode=storage_mode,
         azure=azure_config,
@@ -172,7 +196,8 @@ def load_config() -> AppConfig:
         query=query_config,
         cache=cache_config,
         tiers=tier_config,
-        api=api_config
+        api=api_config,
+        duckdb=duckdb_config
     )
 
 
@@ -182,10 +207,15 @@ def validate_config(config: AppConfig) -> bool:
     
     # Validate storage mode
     if config.storage_mode in [StorageMode.AZURE, StorageMode.HYBRID]:
-        if not config.azure.storage_account:
-            errors.append("AZURE_STORAGE_ACCOUNT is required when using Azure storage")
-        if not config.azure.storage_key:
-            errors.append("AZURE_STORAGE_KEY is required when using Azure storage")
+        # SAS token authentication only
+        if not config.azure.blob_endpoint:
+            errors.append("AZURE_BLOB_ENDPOINT is required when using Azure storage")
+        
+        if not config.azure.sas_token:
+            errors.append("AZURE_SAS_TOKEN is required when using Azure storage")
+        
+        if not config.azure.container_name:
+            errors.append("AZURE_CONTAINER_NAME is required when using Azure storage")
     
     if config.storage_mode in [StorageMode.LOCAL, StorageMode.HYBRID]:
         if not config.local_storage.data_path:
@@ -202,6 +232,12 @@ def validate_config(config: AppConfig) -> bool:
     if config.tiers.raw_tier_max_hours >= config.tiers.aggregated_tier_max_hours:
         errors.append("RAW_TIER_MAX_HOURS must be < AGGREGATED_TIER_MAX_HOURS")
     
+    if config.tiers.aggregated_tier_max_hours >= config.tiers.hourly_tier_max_hours:
+        errors.append("AGGREGATED_TIER_MAX_HOURS must be < HOURLY_TIER_MAX_HOURS")
+    
+    if config.tiers.hourly_tier_max_hours > config.tiers.daily_tier_threshold_hours:
+        errors.append("HOURLY_TIER_MAX_HOURS should be <= DAILY_TIER_THRESHOLD_HOURS")
+    
     if errors:
         for error in errors:
             print(f"Configuration error: {error}")
@@ -215,7 +251,9 @@ def get_tier_for_query(duration_hours: float, config: TierConfig) -> str:
     if duration_hours <= config.raw_tier_max_hours:
         return "raw"
     elif duration_hours <= config.aggregated_tier_max_hours:
-        return "aggregated"
+        return "aggregated"  # minute-level
+    elif duration_hours <= config.hourly_tier_max_hours:
+        return "hourly"
     else:
         return "daily"
 

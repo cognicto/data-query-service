@@ -6,7 +6,7 @@ import logging
 from typing import List, Dict, Optional
 import pandas as pd
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import concurrent.futures
 from threading import Lock
 
@@ -77,6 +77,15 @@ class LocalStorageBackend(StorageBackend):
             
             df = pd.read_parquet(full_path)
             
+            # Handle new optimized schema that only contains timestamp/value
+            if len(df.columns) == 2 and 'timestamp' in df.columns and 'value' in df.columns:
+                # Extract metadata from file path for new schema
+                metadata = self._extract_metadata_from_path(file_path)
+                if metadata['asset_id'] != 'unknown':
+                    df['asset_id'] = metadata['asset_id']
+                if metadata['sensor_name'] != 'unknown':
+                    df['sensor_name'] = metadata['sensor_name']
+            
             # Map daqid to asset_id if daqid exists (for TimescaleDB data structure)
             if 'daqid' in df.columns and 'asset_id' not in df.columns:
                 df['asset_id'] = df['daqid']
@@ -87,6 +96,74 @@ class LocalStorageBackend(StorageBackend):
         except Exception as e:
             logger.error(f"Error reading {file_path}: {e}")
             return pd.DataFrame()
+    
+    def _extract_metadata_from_path(self, file_path: str) -> Dict[str, str]:
+        """Extract asset_id and sensor_name from file path for new optimized schema."""
+        try:
+            # Handle different path formats:
+            # Raw: asset_id/yyyy/mm/dd/hh/sensor_YYYYMMDD_HH.parquet
+            # Aggregated: aggregated/asset_id/yyyy/mm/dd/hh/sensor_minute.parquet
+            # Daily: daily/asset_id/yyyy/mm/sensor_day.parquet
+            
+            parts = file_path.split('/')
+            
+            if 'aggregated/' in file_path:
+                # aggregated/asset_id/yyyy/mm/dd/hh/sensor_minute.parquet
+                if '/aggregated/' in file_path:
+                    agg_parts = file_path.split('/aggregated/')
+                    if len(agg_parts) > 1:
+                        remaining = agg_parts[1].split('/')
+                        if len(remaining) >= 1:
+                            asset_id = remaining[0]
+                            filename = remaining[-1]
+                            # Handle both minute and hourly aggregations
+                            sensor_name = filename.replace('_minute.parquet', '').replace('_hour.parquet', '').replace('.parquet', '')
+                            return {'asset_id': asset_id, 'sensor_name': sensor_name}
+                else:
+                    # Handle case where path starts with aggregated
+                    parts = file_path.split('/')
+                    if parts[0] == 'aggregated' and len(parts) >= 2:
+                        asset_id = parts[1]
+                        filename = parts[-1]
+                        # Handle both minute and hourly aggregations
+                        sensor_name = filename.replace('_minute.parquet', '').replace('_hour.parquet', '').replace('.parquet', '')
+                        return {'asset_id': asset_id, 'sensor_name': sensor_name}
+            elif 'daily/' in file_path:
+                # daily/asset_id/yyyy/mm/sensor_day.parquet
+                if '/daily/' in file_path:
+                    daily_parts = file_path.split('/daily/')
+                    if len(daily_parts) > 1:
+                        remaining = daily_parts[1].split('/')
+                        if len(remaining) >= 1:
+                            asset_id = remaining[0]
+                            filename = remaining[-1]
+                            sensor_name = filename.replace('_day.parquet', '').replace('.parquet', '')
+                            return {'asset_id': asset_id, 'sensor_name': sensor_name}
+                else:
+                    # Handle case where path starts with daily
+                    if parts[0] == 'daily' and len(parts) >= 2:
+                        asset_id = parts[1]
+                        filename = parts[-1]
+                        sensor_name = filename.replace('_day.parquet', '').replace('.parquet', '')
+                        return {'asset_id': asset_id, 'sensor_name': sensor_name}
+            else:
+                # Raw data: asset_id/yyyy/mm/dd/hh/sensor_YYYYMMDD_HH.parquet
+                if len(parts) >= 6:
+                    asset_id = parts[0] if parts[0] else parts[1]  # Handle leading slash
+                    filename = parts[-1]
+                    # Extract sensor name from new format: sensor_YYYYMMDD_HH.parquet
+                    if '_' in filename:
+                        sensor_name = filename.rsplit('_', 2)[0]  # Get everything before last two underscores
+                    else:
+                        sensor_name = filename.replace('.parquet', '')
+                    return {'asset_id': asset_id, 'sensor_name': sensor_name}
+            
+            # Fallback
+            return {'asset_id': 'unknown', 'sensor_name': 'unknown'}
+            
+        except Exception as e:
+            logger.error(f"Error extracting metadata from path {file_path}: {e}")
+            return {'asset_id': 'unknown', 'sensor_name': 'unknown'}
     
     def read_multiple_parquet(self, file_paths: List[str], max_workers: int = 4) -> pd.DataFrame:
         """Read multiple Parquet files in parallel."""
@@ -111,17 +188,53 @@ class LocalStorageBackend(StorageBackend):
                         dataframes.append(df)
                 except Exception as e:
                     logger.error(f"Error reading {file_path} in parallel: {e}")
+                    logger.debug(f"File path details: {file_path}", exc_info=True)
         
         if not dataframes:
             return pd.DataFrame()
         
-        # Combine all dataframes
+        # Combine all dataframes with column consistency checks
         try:
-            combined_df = pd.concat(dataframes, ignore_index=True)
+            if len(dataframes) == 1:
+                combined_df = dataframes[0].copy()
+            else:
+                # Ensure all dataframes have consistent columns
+                base_columns = dataframes[0].columns.tolist()
+                
+                # Check for column consistency and fix if needed
+                consistent_dataframes = []
+                for i, df in enumerate(dataframes):
+                    df_copy = df.copy()
+                    
+                    # Ensure consistent column types
+                    if 'timestamp' in df_copy.columns:
+                        if not pd.api.types.is_datetime64_any_dtype(df_copy['timestamp']):
+                            df_copy['timestamp'] = pd.to_datetime(df_copy['timestamp'], errors='coerce')
+                    
+                    # Ensure we have the expected columns
+                    for col in base_columns:
+                        if col not in df_copy.columns:
+                            logger.warning(f"Column '{col}' missing from DataFrame {i}, adding as null")
+                            df_copy[col] = None
+                    
+                    # Remove any extra columns not in base
+                    df_copy = df_copy[base_columns]
+                    
+                    consistent_dataframes.append(df_copy)
+                
+                # Now safely concatenate
+                combined_df = pd.concat(consistent_dataframes, ignore_index=True, sort=False)
+            
+            # Sort by timestamp if available
+            if 'timestamp' in combined_df.columns and not combined_df.empty:
+                combined_df = combined_df.sort_values('timestamp').reset_index(drop=True)
+            
             logger.info(f"Combined {len(dataframes)} files into {len(combined_df)} rows")
             return combined_df
+            
         except Exception as e:
             logger.error(f"Error combining dataframes: {e}")
+            logger.debug(f"DataFrame columns: {[df.columns.tolist() for df in dataframes] if dataframes else 'None'}")
             return pd.DataFrame()
     
     def file_exists(self, file_path: str) -> bool:
@@ -212,6 +325,16 @@ class LocalStorageBackend(StorageBackend):
                 'cache_entries': len(self._file_cache),
                 'cache_keys': list(self._file_cache.keys())
             }
+    
+    def close(self):
+        """Close connections and cleanup resources."""
+        try:
+            # Clear caches
+            with self._cache_lock:
+                self._file_cache.clear()
+            logger.debug("Local storage backend closed")
+        except Exception as e:
+            logger.error(f"Error closing local storage backend: {e}")
 
 
 class LocalAggregatedReader:
@@ -234,9 +357,15 @@ class LocalAggregatedReader:
         file_paths = self._get_aggregated_file_paths(sensors, start_time, end_time, asset_ids)
         return self.local.read_multiple_parquet(file_paths)
     
+    def read_hourly_data(self, sensors: List[str], start_time: datetime, end_time: datetime,
+                        asset_ids: Optional[List[str]] = None) -> pd.DataFrame:
+        """Read hourly aggregated data from local storage."""
+        file_paths = self._get_hourly_file_paths(sensors, start_time, end_time, asset_ids)
+        return self.local.read_multiple_parquet(file_paths)
+    
     def read_daily_data(self, sensors: List[str], start_time: datetime, end_time: datetime,
                        asset_ids: Optional[List[str]] = None) -> pd.DataFrame:
-        """Read daily summary data (hourly precision) from local storage."""
+        """Read daily summary data from local storage."""
         file_paths = self._get_daily_file_paths(sensors, start_time, end_time, asset_ids)
         return self.local.read_multiple_parquet(file_paths)
     
@@ -262,14 +391,20 @@ class LocalAggregatedReader:
     
     def _get_aggregated_file_paths(self, sensors: List[str], start_time: datetime, end_time: datetime,
                                   asset_ids: Optional[List[str]] = None) -> List[str]:
-        """Get file paths for aggregated data tier."""
-        # Aggregated data: aggregated/asset_id/yyyy/mm/dd/sensor.parquet
-        return self._build_hierarchical_paths("aggregated", sensors, start_time, end_time, asset_ids, include_hour=False)
+        """Get file paths for aggregated (minute-level) data tier."""
+        # Aggregated data: aggregated/asset_id/yyyy/mm/dd/hh/sensor_minute.parquet
+        return self._build_hierarchical_paths("aggregated", sensors, start_time, end_time, asset_ids, include_day=True, include_hour=True)
+    
+    def _get_hourly_file_paths(self, sensors: List[str], start_time: datetime, end_time: datetime,
+                              asset_ids: Optional[List[str]] = None) -> List[str]:
+        """Get file paths for hourly aggregated data tier."""
+        # Hourly data: aggregated/asset_id/yyyy/mm/dd/sensor_hour.parquet
+        return self._build_hierarchical_paths("aggregated", sensors, start_time, end_time, asset_ids, include_day=True, include_hour=False)
     
     def _get_daily_file_paths(self, sensors: List[str], start_time: datetime, end_time: datetime,
                              asset_ids: Optional[List[str]] = None) -> List[str]:
         """Get file paths for daily data tier."""
-        # Daily data: daily/asset_id/yyyy/mm/sensor.parquet
+        # Daily data: daily/asset_id/yyyy/mm/sensor_day.parquet
         return self._build_hierarchical_paths("daily", sensors, start_time, end_time, asset_ids, include_day=False, include_hour=False)
     
     def _build_hierarchical_paths(self, prefix: str, sensors: List[str], start_time: datetime, end_time: datetime,
@@ -287,7 +422,7 @@ class LocalAggregatedReader:
         while current_time < end_time:
             for asset_id in asset_ids:
                 for sensor in sensors:
-                    # Build path based on tier
+                    # Build path based on tier and new file naming convention
                     path_parts = []
                     
                     if prefix:
@@ -305,35 +440,41 @@ class LocalAggregatedReader:
                     if include_hour:
                         path_parts.append(f"{current_time.hour:02d}")
                     
-                    path_parts.append(f"{sensor}.parquet")
+                    # Use new file naming convention based on prefix and granularity
+                    if prefix == "aggregated":
+                        if include_hour:
+                            # For minute-level aggregations: sensor_minute.parquet
+                            filename = f"{sensor}_minute.parquet"
+                        else:
+                            # For hourly aggregations: sensor_hour.parquet
+                            filename = f"{sensor}_hour.parquet"
+                    elif prefix == "daily":
+                        # For daily: sensor_day.parquet  
+                        filename = f"{sensor}_day.parquet"
+                    else:
+                        # For raw data: sensor_YYYYMMDD_HH.parquet
+                        date_str = f"{current_time.year:04d}{current_time.month:02d}{current_time.day:02d}_{current_time.hour:02d}"
+                        filename = f"{sensor}_{date_str}.parquet"
                     
+                    path_parts.append(filename)
                     file_path = "/".join(path_parts)
                     
                     # Check if file exists before adding
                     if self.local.file_exists(file_path):
                         paths.append(file_path)
             
-            # Increment time based on tier granularity
+            # Increment time based on tier granularity using timedelta for safety
             if include_hour:
-                current_time = current_time.replace(hour=current_time.hour + 1)
-                if current_time.hour == 0:
-                    current_time = current_time.replace(day=current_time.day + 1, hour=0)
-                    if current_time.day == 1 and current_time != start_time.replace(minute=0, second=0, microsecond=0, hour=0, day=1):
-                        # Handle month rollover
-                        if current_time.month == 13:
-                            current_time = current_time.replace(year=current_time.year + 1, month=1)
+                # Increment by 1 hour
+                current_time = current_time + timedelta(hours=1)
             elif include_day:
-                current_time = current_time.replace(day=current_time.day + 1)
-                if current_time.day == 1 and current_time != start_time.replace(minute=0, second=0, microsecond=0, hour=0, day=1):
-                    # Handle month rollover
-                    if current_time.month == 13:
-                        current_time = current_time.replace(year=current_time.year + 1, month=1)
+                # Increment by 1 day
+                current_time = current_time + timedelta(days=1)
             else:
-                # Monthly increment
-                if current_time.month == 12:
-                    current_time = current_time.replace(year=current_time.year + 1, month=1)
-                else:
-                    current_time = current_time.replace(month=current_time.month + 1)
+                # Monthly increment - approximate with 30 days, will be refined by file existence check
+                current_time = current_time + timedelta(days=30)
+                # Adjust to start of next month
+                current_time = current_time.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         
         return paths
     

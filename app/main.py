@@ -12,7 +12,7 @@ from datetime import datetime
 
 from app.config import load_config, validate_config
 from app.query.engine import SmartQueryEngine
-from app.api.routes_specialized import create_specialized_app
+from app.api.app import create_app
 
 # Configure logging
 logging.basicConfig(
@@ -51,9 +51,9 @@ class QueryService:
             logger.info("Initializing query engine...")
             self.query_engine = SmartQueryEngine(self.config)
             
-            # Create FastAPI app with specialized endpoints
-            logger.info("Creating FastAPI application with specialized endpoints...")
-            self.app = create_specialized_app(self.config, self.query_engine)
+            # Create FastAPI app with clean unified endpoints
+            logger.info("Creating FastAPI application with clean endpoints...")
+            self.app = create_app(self.config, self.query_engine)
             
             logger.info("Service initialization completed successfully")
             return True
