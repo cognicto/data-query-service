@@ -1,0 +1,61 @@
+# Simplified Sensor Data Service Makefile
+
+.PHONY: install dev run test clean help
+
+# Default environment file
+ENV_FILE ?= .env.simple
+
+help: ## Show this help message
+	@echo "Simplified Sensor Data Service"
+	@echo "Usage: make [target]"
+	@echo ""
+	@echo "Targets:"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
+
+install: ## Install dependencies
+	pip install -r requirements_simple.txt
+
+dev: ## Run development server with auto-reload
+	uvicorn app.main_simple:app --reload --host 0.0.0.0 --port 8080 --env-file $(ENV_FILE)
+
+run: ## Run production server
+	python -m app.main_simple
+
+test: ## Test DuckDB and basic functionality
+	python -c "import duckdb; print(f'✅ DuckDB {duckdb.__version__} available')"
+	python -c "from app.config_simple import load_config; print('✅ Config loading works')"
+	python -c "from app.storage_simple import UnifiedStorageBackend; print('✅ Storage backend imports')"
+	python -c "from app.query_engine_simple import SimpleQueryEngine; print('✅ Query engine imports')"
+
+health: ## Check service health
+	curl -s http://localhost:8080/health | python -m json.tool
+
+info: ## Get API information
+	curl -s http://localhost:8080/api/v2/info | python -m json.tool
+
+assets: ## List available assets
+	curl -s http://localhost:8080/api/v2/assets | python -m json.tool
+
+clean: ## Clean up cache files
+	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	find . -name "*.pyc" -delete 2>/dev/null || true
+
+# Environment-specific targets
+local: ## Run with local storage
+	STORAGE_MODE=local make dev
+
+azure: ## Run with Azure ADLS Gen2
+	STORAGE_MODE=azure make dev
+
+# Quick test queries (requires service to be running)
+test-raw: ## Test raw data query
+	curl -X POST "http://localhost:8080/api/v2/raw" \
+		-H "Content-Type: application/json" \
+		-d '{"device": "asset_001", "sensor": "temperature_ch1", "time_range": {"start": "2026-04-04T10:00:00Z", "end": "2026-04-04T11:00:00Z"}}' \
+		| python -m json.tool
+
+test-aggregated: ## Test aggregated data query
+	curl -X POST "http://localhost:8080/api/v2/aggregated" \
+		-H "Content-Type: application/json" \
+		-d '{"device": "asset_001", "sensor": "temperature_ch1", "time_range": {"start": "2026-04-04T10:00:00Z", "end": "2026-04-04T14:00:00Z"}, "interval_ms": 300000, "aggregation_method": "avg", "max_data_points": 100}' \
+		| python -m json.tool
