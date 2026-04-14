@@ -77,11 +77,9 @@ class SimpleQueryEngine:
                 aggregation_method=aggregation_method
             )
             
-            # Determine tier used
-            if interval_ms and interval_ms > 1000:
-                tier_used = "aggregated"
-            else:
-                tier_used = "raw"
+            # Get actual tier used (from storage backend)
+            selected_tier = self.storage._select_data_tier(interval_ms)
+            tier_used = selected_tier.value
             
             # Check if truncated
             truncated = max_datapoints and len(data) >= max_datapoints

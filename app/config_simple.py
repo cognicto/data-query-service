@@ -41,12 +41,22 @@ class DuckDBConfig:
 
 
 @dataclass
+class TierConfig:
+    """Data tier selection configuration."""
+    raw_threshold_minutes: int = 5           # Use raw if interval_ms < 5 minutes
+    minute_threshold_minutes: int = 60       # Use minute agg if interval < 60 minutes  
+    hourly_threshold_days: int = 30          # Use hourly agg if interval < 30 days
+    # Beyond 30 days uses daily aggregation
+
+
+@dataclass
 class AppConfig:
     """Main application configuration."""
     storage_mode: StorageMode
     azure: AzureConfig
     local: LocalConfig
     duckdb: DuckDBConfig
+    tiers: TierConfig
     
     # API settings
     api_host: str = "0.0.0.0"
@@ -78,11 +88,18 @@ def load_config() -> AppConfig:
         threads=int(os.getenv("DUCKDB_THREADS", "4"))
     )
     
+    tier_config = TierConfig(
+        raw_threshold_minutes=int(os.getenv("TIER_RAW_THRESHOLD_MINUTES", "5")),
+        minute_threshold_minutes=int(os.getenv("TIER_MINUTE_THRESHOLD_MINUTES", "60")),
+        hourly_threshold_days=int(os.getenv("TIER_HOURLY_THRESHOLD_DAYS", "30"))
+    )
+    
     return AppConfig(
         storage_mode=storage_mode,
         azure=azure_config,
         local=local_config,
         duckdb=duckdb_config,
+        tiers=tier_config,
         api_host=os.getenv("API_HOST", "0.0.0.0"),
         api_port=int(os.getenv("API_PORT", "8080")),
         max_query_duration_hours=int(os.getenv("MAX_QUERY_DURATION_HOURS", "168")),

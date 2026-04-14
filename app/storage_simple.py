@@ -8,8 +8,16 @@ import pandas as pd
 from pathlib import Path
 from typing import List, Optional
 from datetime import datetime, timedelta
+from enum import Enum
 
 from app.config_simple import AppConfig, StorageMode
+
+class DataTier(Enum):
+    """Available data tiers for optimization."""
+    RAW = "raw"
+    MINUTE = "minute"
+    HOURLY = "hourly" 
+    DAILY = "daily"
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +66,12 @@ class UnifiedStorageBackend:
                          aggregation_method: str = "avg") -> pd.DataFrame:
         """Query sensor data with automatic aggregation."""
         
-        # Build file paths
-        file_paths = self._build_file_paths(sensors, start_time, end_time, asset_ids)
+        # Select optimal data tier
+        selected_tier = self._select_data_tier(interval_ms)
+        logger.info(f"Selected data tier: {selected_tier.value} for interval_ms={interval_ms}")
+        
+        # Build file paths based on selected tier
+        file_paths = self._build_file_paths(sensors, start_time, end_time, asset_ids, selected_tier)
         
         if not file_paths:
             logger.warning("No files found for query")
@@ -89,7 +101,8 @@ class UnifiedStorageBackend:
                          sensors: List[str],
                          start_time: datetime, 
                          end_time: datetime,
-                         asset_ids: List[str]) -> List[str]:
+                         asset_ids: List[str],
+                         tier: DataTier) -> List[str]:
         """Build file paths based on storage mode."""
         paths = []
         
@@ -97,53 +110,146 @@ class UnifiedStorageBackend:
             for sensor in sensors:
                 if self.config.storage_mode == StorageMode.AZURE:
                     # Use ADLS Gen2 with hierarchical namespace
-                    paths.extend(self._build_azure_paths(asset_id, sensor, start_time, end_time))
+                    paths.extend(self._build_azure_paths(asset_id, sensor, start_time, end_time, tier))
                 else:
                     # Local file paths
-                    paths.extend(self._build_local_paths(asset_id, sensor, start_time, end_time))
+                    paths.extend(self._build_local_paths(asset_id, sensor, start_time, end_time, tier))
         
         return paths
     
     def _build_azure_paths(self, asset_id: str, sensor: str, 
-                          start_time: datetime, end_time: datetime) -> List[str]:
+                          start_time: datetime, end_time: datetime, tier: DataTier) -> List[str]:
         """Build Azure ADLS Gen2 paths with glob patterns for efficiency."""
         
         base_url = self.config.azure.abfss_endpoint
         prefix = f"/{self.config.azure.data_prefix}" if self.config.azure.data_prefix else ""
         
+        if tier == DataTier.RAW:
+            return self._build_raw_azure_paths(base_url, prefix, asset_id, sensor, start_time, end_time)
+        elif tier == DataTier.MINUTE:
+            return self._build_minute_azure_paths(base_url, prefix, asset_id, sensor, start_time, end_time)
+        elif tier == DataTier.HOURLY:
+            return self._build_hourly_azure_paths(base_url, prefix, asset_id, sensor, start_time, end_time)
+        elif tier == DataTier.DAILY:
+            return self._build_daily_azure_paths(base_url, prefix, asset_id, sensor, start_time, end_time)
+        
+        return []
+    
+    def _build_raw_azure_paths(self, base_url: str, prefix: str, asset_id: str, sensor: str, 
+                              start_time: datetime, end_time: datetime) -> List[str]:
+        """Build paths for raw data tier."""
         paths = []
         current_date = start_time.date()
         
         while current_date <= end_time.date():
             year, month, day = current_date.year, current_date.month, current_date.day
             
-            # Use glob pattern for efficient hierarchical namespace navigation
             if current_date == start_time.date() == end_time.date():
                 # Same day - specific hours
                 for hour in range(start_time.hour, end_time.hour + 1):
                     path = f"{base_url}{prefix}/{asset_id}/{year:04d}/{month:02d}/{day:02d}/{hour:02d}/{sensor}_{year:04d}{month:02d}{day:02d}_{hour:02d}.parquet"
                     paths.append(path)
             else:
-                # Different days - use glob for efficiency
-                path = f"{base_url}{prefix}/{asset_id}/{year:04d}/{month:02d}/{day:02d}/**/{sensor}_*.parquet"
-                paths.append(path)
-                break  # Glob handles multiple hours/files
+                # Multiple days - full day ranges
+                start_hour = start_time.hour if current_date == start_time.date() else 0
+                end_hour = end_time.hour if current_date == end_time.date() else 23
+                
+                for hour in range(start_hour, end_hour + 1):
+                    path = f"{base_url}{prefix}/{asset_id}/{year:04d}/{month:02d}/{day:02d}/{hour:02d}/{sensor}_{year:04d}{month:02d}{day:02d}_{hour:02d}.parquet"
+                    paths.append(path)
             
             current_date += timedelta(days=1)
         
         return paths
     
+    def _build_minute_azure_paths(self, base_url: str, prefix: str, asset_id: str, sensor: str,
+                                 start_time: datetime, end_time: datetime) -> List[str]:
+        """Build paths for minute aggregated data tier."""
+        paths = []
+        current_date = start_time.date()
+        
+        while current_date <= end_time.date():
+            year, month, day = current_date.year, current_date.month, current_date.day
+            
+            if current_date == start_time.date() == end_time.date():
+                # Same day - specific hours
+                for hour in range(start_time.hour, end_time.hour + 1):
+                    path = f"{base_url}{prefix}/aggregated/{asset_id}/{year:04d}/{month:02d}/{day:02d}/{hour:02d}/{sensor}_minute.parquet"
+                    paths.append(path)
+            else:
+                # Multiple days
+                start_hour = start_time.hour if current_date == start_time.date() else 0
+                end_hour = end_time.hour if current_date == end_time.date() else 23
+                
+                for hour in range(start_hour, end_hour + 1):
+                    path = f"{base_url}{prefix}/aggregated/{asset_id}/{year:04d}/{month:02d}/{day:02d}/{hour:02d}/{sensor}_minute.parquet"
+                    paths.append(path)
+            
+            current_date += timedelta(days=1)
+        
+        return paths
+    
+    def _build_hourly_azure_paths(self, base_url: str, prefix: str, asset_id: str, sensor: str,
+                                 start_time: datetime, end_time: datetime) -> List[str]:
+        """Build paths for hourly aggregated data tier."""
+        paths = []
+        current_date = start_time.date()
+        
+        while current_date <= end_time.date():
+            year, month, day = current_date.year, current_date.month, current_date.day
+            path = f"{base_url}{prefix}/aggregated/{asset_id}/{year:04d}/{month:02d}/{day:02d}/{sensor}_hour.parquet"
+            paths.append(path)
+            current_date += timedelta(days=1)
+        
+        return paths
+    
+    def _build_daily_azure_paths(self, base_url: str, prefix: str, asset_id: str, sensor: str,
+                                start_time: datetime, end_time: datetime) -> List[str]:
+        """Build paths for daily aggregated data tier.""" 
+        paths = []
+        current_date = start_time.date()
+        
+        while current_date <= end_time.date():
+            year, month = current_date.year, current_date.month
+            path = f"{base_url}{prefix}/daily/{asset_id}/{year:04d}/{month:02d}/{sensor}_day.parquet"
+            paths.append(path)
+            # Move to next month for daily aggregation
+            if current_date.month == 12:
+                current_date = current_date.replace(year=current_date.year + 1, month=1, day=1)
+            else:
+                current_date = current_date.replace(month=current_date.month + 1, day=1)
+            
+            # Avoid infinite loop
+            if current_date > end_time.date():
+                break
+        
+        return paths
+    
     def _build_local_paths(self, asset_id: str, sensor: str,
-                          start_time: datetime, end_time: datetime) -> List[str]:
+                          start_time: datetime, end_time: datetime, tier: DataTier) -> List[str]:
         """Build local file paths."""
         
         base_path = Path(self.config.local.data_path)
-        paths = []
         
+        if tier == DataTier.RAW:
+            return self._build_raw_local_paths(base_path, asset_id, sensor, start_time, end_time)
+        elif tier == DataTier.MINUTE:
+            return self._build_minute_local_paths(base_path, asset_id, sensor, start_time, end_time)
+        elif tier == DataTier.HOURLY:
+            return self._build_hourly_local_paths(base_path, asset_id, sensor, start_time, end_time)
+        elif tier == DataTier.DAILY:
+            return self._build_daily_local_paths(base_path, asset_id, sensor, start_time, end_time)
+        
+        return []
+    
+    def _build_raw_local_paths(self, base_path: Path, asset_id: str, sensor: str,
+                              start_time: datetime, end_time: datetime) -> List[str]:
+        """Build local paths for raw data tier."""
+        paths = []
         current_time = start_time.replace(minute=0, second=0, microsecond=0)
+        
         while current_time <= end_time:
             year, month, day, hour = current_time.year, current_time.month, current_time.day, current_time.hour
-            
             file_path = base_path / asset_id / f"{year:04d}" / f"{month:02d}" / f"{day:02d}" / f"{hour:02d}" / f"{sensor}_{year:04d}{month:02d}{day:02d}_{hour:02d}.parquet"
             
             if file_path.exists():
@@ -152,6 +258,87 @@ class UnifiedStorageBackend:
             current_time += timedelta(hours=1)
         
         return paths
+    
+    def _build_minute_local_paths(self, base_path: Path, asset_id: str, sensor: str,
+                                 start_time: datetime, end_time: datetime) -> List[str]:
+        """Build local paths for minute aggregated data tier."""
+        paths = []
+        current_time = start_time.replace(minute=0, second=0, microsecond=0)
+        
+        while current_time <= end_time:
+            year, month, day, hour = current_time.year, current_time.month, current_time.day, current_time.hour
+            file_path = base_path / "aggregated" / asset_id / f"{year:04d}" / f"{month:02d}" / f"{day:02d}" / f"{hour:02d}" / f"{sensor}_minute.parquet"
+            
+            if file_path.exists():
+                paths.append(str(file_path))
+            
+            current_time += timedelta(hours=1)
+        
+        return paths
+    
+    def _build_hourly_local_paths(self, base_path: Path, asset_id: str, sensor: str,
+                                 start_time: datetime, end_time: datetime) -> List[str]:
+        """Build local paths for hourly aggregated data tier."""
+        paths = []
+        current_date = start_time.date()
+        
+        while current_date <= end_time.date():
+            year, month, day = current_date.year, current_date.month, current_date.day
+            file_path = base_path / "aggregated" / asset_id / f"{year:04d}" / f"{month:02d}" / f"{day:02d}" / f"{sensor}_hour.parquet"
+            
+            if file_path.exists():
+                paths.append(str(file_path))
+            
+            current_date += timedelta(days=1)
+        
+        return paths
+    
+    def _build_daily_local_paths(self, base_path: Path, asset_id: str, sensor: str,
+                                start_time: datetime, end_time: datetime) -> List[str]:
+        """Build local paths for daily aggregated data tier."""
+        paths = []
+        current_date = start_time.date()
+        
+        while current_date <= end_time.date():
+            year, month = current_date.year, current_date.month
+            file_path = base_path / "daily" / asset_id / f"{year:04d}" / f"{month:02d}" / f"{sensor}_day.parquet"
+            
+            if file_path.exists():
+                paths.append(str(file_path))
+            
+            # Move to next month for daily aggregation
+            if current_date.month == 12:
+                current_date = current_date.replace(year=current_date.year + 1, month=1, day=1)
+            else:
+                current_date = current_date.replace(month=current_date.month + 1, day=1)
+            
+            if current_date > end_time.date():
+                break
+        
+        return paths
+    
+    def _select_data_tier(self, interval_ms: Optional[int]) -> DataTier:
+        """Select optimal data tier based on aggregation interval."""
+        if not interval_ms:
+            return DataTier.RAW
+        
+        # Convert interval to minutes
+        interval_minutes = interval_ms / (1000 * 60)
+        
+        # Apply tier selection logic based on configuration
+        if interval_minutes < self.config.tiers.raw_threshold_minutes:
+            return DataTier.RAW
+        elif interval_minutes < self.config.tiers.minute_threshold_minutes:
+            return DataTier.MINUTE
+        else:
+            # For intervals >= 60 minutes, decide between hourly and daily
+            # Convert threshold from days to minutes for comparison
+            daily_threshold_minutes = self.config.tiers.hourly_threshold_days * 24 * 60  # 30 days * 24h * 60m = 43,200 minutes
+            
+            if interval_minutes < daily_threshold_minutes:
+                return DataTier.HOURLY
+            else:
+                return DataTier.DAILY
     
     def _extract_asset_id_from_path(self, file_path: str) -> str:
         """Extract asset_id from file path."""
