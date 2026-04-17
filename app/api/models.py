@@ -61,7 +61,10 @@ class AggregatedDataRequest(BaseModel):
 
 class RawDataResponse(BaseModel):
     """Raw data response."""
-    data: List[List[Union[int, float, None]]] = Field(..., description="Array of [timestamp_ms, value] pairs")
+    data: List[List[Union[str, float, None]]] = Field(
+        ...,
+        description="Array of [timestamp, value] pairs, where timestamp is an ISO 8601 UTC string (e.g. 2026-01-18T09:00:00.036373Z)"
+    )
     count: int = Field(..., description="Number of data points")
     device: str = Field(..., description="Device identifier")
     sensor: str = Field(..., description="Sensor name")
@@ -70,14 +73,20 @@ class RawDataResponse(BaseModel):
 
 class AggregatedDataResponse(BaseModel):
     """Aggregated data response."""
-    data: List[List[Union[int, float, None]]] = Field(..., description="Array of [timestamp_ms, value] pairs")
+    data: List[List[Union[str, float, None]]] = Field(
+        ...,
+        description="Array of [timestamp, value] pairs, where timestamp is an ISO 8601 UTC string (e.g. 2026-01-18T09:00:00.036373Z)"
+    )
     count: int = Field(..., description="Number of data points")
     device: str = Field(..., description="Device identifier")
     sensor: str = Field(..., description="Sensor name")
     interval_ms: int = Field(..., description="Aggregation interval")
     aggregation_method: str = Field(..., description="Aggregation method used")
     truncated: bool = Field(..., description="Whether data was truncated")
-    truncated_end_time: Optional[int] = Field(None, description="End timestamp if truncated")
+    truncated_end_time: Optional[str] = Field(
+        None,
+        description="Truncated end timestamp in ISO 8601 UTC format, if truncation occurred"
+    )
     execution_time_ms: float = Field(..., description="Query execution time")
 
 

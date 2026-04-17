@@ -2,7 +2,12 @@
 Simplified main application for sensor data service.
 """
 
+
+from dotenv import load_dotenv
+
+load_dotenv()
 import logging
+import os
 import uvicorn
 from contextlib import asynccontextmanager
 
@@ -10,9 +15,9 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.config_simple import load_config
-from app.query_engine_simple import SimpleQueryEngine
-from app.api.routes_simple import router, set_query_engine
+from app.config import load_config
+from app.query.query_engine import SimpleQueryEngine
+from app.api.routes import router, set_query_engine
 
 # Configure logging
 logging.basicConfig(
@@ -128,7 +133,7 @@ def main():
     logger.info(f"Starting server on {config.api_host}:{config.api_port}")
     
     uvicorn.run(
-        "app.main_simple:app",
+        "app.main:app",
         host=config.api_host,
         port=config.api_port,
         reload=False,

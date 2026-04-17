@@ -101,7 +101,7 @@ def load_config() -> AppConfig:
         duckdb=duckdb_config,
         tiers=tier_config,
         api_host=os.getenv("API_HOST", "0.0.0.0"),
-        api_port=int(os.getenv("API_PORT", "8080")),
+        api_port=int(os.getenv("API_PORT", "8082")),
         max_query_duration_hours=int(os.getenv("MAX_QUERY_DURATION_HOURS", "168")),
         default_max_datapoints=int(os.getenv("DEFAULT_MAX_DATAPOINTS", "10000"))
     )

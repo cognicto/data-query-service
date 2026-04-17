@@ -9,8 +9,8 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 from dataclasses import dataclass
 
-from app.config_simple import AppConfig
-from app.storage_simple import UnifiedStorageBackend
+from app.config import  AppConfig
+from app.storage.storage import UnifiedStorageBackend
 
 logger = logging.getLogger(__name__)
 

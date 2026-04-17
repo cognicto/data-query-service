@@ -10,7 +10,7 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 from enum import Enum
 
-from app.config_simple import AppConfig, StorageMode
+from app.config import AppConfig, StorageMode
 
 class DataTier(Enum):
     """Available data tiers for optimization."""
@@ -105,6 +105,8 @@ class UnifiedStorageBackend:
                          tier: DataTier) -> List[str]:
         """Build file paths based on storage mode."""
         paths = []
+        
+        logger.info(f"Building file paths: sensors={sensors}, asset_ids={asset_ids}, tier={tier}, start={start_time}, end={end_time}")
         
         for asset_id in asset_ids:
             for sensor in sensors:
@@ -248,15 +250,21 @@ class UnifiedStorageBackend:
         paths = []
         current_time = start_time.replace(minute=0, second=0, microsecond=0)
         
+        logger.info(f"Building raw local paths: base_path={base_path}, asset_id={asset_id}, sensor={sensor}, start={start_time}, end={end_time}")
+        logger.info(f"Current working directory: {Path.cwd()}")
+        
         while current_time <= end_time:
             year, month, day, hour = current_time.year, current_time.month, current_time.day, current_time.hour
             file_path = base_path / asset_id / f"{year:04d}" / f"{month:02d}" / f"{day:02d}" / f"{hour:02d}" / f"{sensor}_{year:04d}{month:02d}{day:02d}_{hour:02d}.parquet"
+            
+            logger.info(f"Checking path: {file_path}, exists: {file_path.exists()}")
             
             if file_path.exists():
                 paths.append(str(file_path))
             
             current_time += timedelta(hours=1)
         
+        logger.info(f"Found {len(paths)} raw local paths")
         return paths
     
     def _build_minute_local_paths(self, base_path: Path, asset_id: str, sensor: str,

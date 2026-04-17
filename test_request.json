@@ -1,0 +1,19 @@
+{
+  "device": "c071ba1a-d9b0-5194-a4d6-4546feeb67ae",
+  "sensor": "quad_ch1",
+  "time_range": {
+    "start": "2026-04-04T12:00:00Z",
+    "end": "2026-04-04T22:00:00Z"
+  }
+}
+
+
+{
+  "device": "c071ba1a-d9b0-5194-a4d6-4546feeb67ae",
+  "sensor": "quad_ch1",
+  "start_time": "2026-04-04T12:00:00Z",
+  "end_time": "2026-04-04T22:00:00Z",
+  "interval_ms": 600000,
+  "max_data_points": 1000,
+  "aggregation_method": "mean"
+}

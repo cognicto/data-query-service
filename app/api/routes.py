@@ -6,12 +6,13 @@ import logging
 import time
 import pandas as pd
 from typing import List, Optional
+from datetime import timezone
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
 
-from app.query_engine_simple import SimpleQueryEngine
-from app.api.models_simple import (
+from app.query.query_engine import SimpleQueryEngine
+from app.api.models import (
     RawDataRequest, AggregatedDataRequest, RawDataResponse, AggregatedDataResponse,
     AssetListResponse, SensorListResponse, HealthResponse, ErrorResponse
 )
@@ -36,6 +37,16 @@ def get_query_engine() -> SimpleQueryEngine:
 router = APIRouter()
 
 
+def format_timestamp_to_iso(timestamp: pd.Timestamp) -> str:
+    """Format a timestamp to ISO 8601 UTC with Z suffix."""
+    ts = pd.to_datetime(timestamp)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize(timezone.utc)
+    else:
+        ts = ts.astimezone(timezone.utc)
+    return ts.isoformat(timespec='microseconds').replace('+00:00', 'Z')
+
+
 def convert_dataframe_to_raw_response(df: pd.DataFrame, device: str, sensor: str, 
                                     execution_time: float) -> RawDataResponse:
     """Convert DataFrame to raw data response."""
@@ -45,9 +56,9 @@ def convert_dataframe_to_raw_response(df: pd.DataFrame, device: str, sensor: str
         for _, row in df.iterrows():
             try:
                 timestamp = pd.to_datetime(row['timestamp'])
-                timestamp_ms = int(timestamp.timestamp() * 1000)
+                formatted_ts = format_timestamp_to_iso(timestamp)
                 value = row['value'] if pd.notna(row['value']) else None
-                data.append([timestamp_ms, value])
+                data.append([formatted_ts, value])
             except Exception as e:
                 logger.warning(f"Failed to convert data point: {e}")
                 continue
@@ -73,9 +84,9 @@ def convert_dataframe_to_aggregated_response(df: pd.DataFrame, device: str, sens
         for _, row in df.iterrows():
             try:
                 timestamp = pd.to_datetime(row['timestamp'])
-                timestamp_ms = int(timestamp.timestamp() * 1000)
+                formatted_ts = format_timestamp_to_iso(timestamp)
                 value = row['value'] if pd.notna(row['value']) else None
-                data.append([timestamp_ms, value])
+                data.append([formatted_ts, value])
             except Exception as e:
                 logger.warning(f"Failed to convert data point: {e}")
                 continue
