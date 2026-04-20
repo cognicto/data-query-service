@@ -45,16 +45,39 @@ class UnifiedStorageBackend:
     def _setup_authentication(self):
         """Setup authentication based on storage mode."""
         if self.config.storage_mode == StorageMode.AZURE:
-            # Create Azure secret with SAS token
-            sas_token = self.config.azure.sas_token.lstrip('?')
-            
-            self.connection.execute(f"""
-                CREATE SECRET azure_secret (
-                    TYPE AZURE,
-                    CONNECTION_STRING 'DefaultEndpointsProtocol=https;AccountName={self.config.azure.account_name};SharedAccessSignature={sas_token};EndpointSuffix=core.windows.net'
-                )
-            """)
-            logger.info("Azure authentication configured")
+            # ADLS Gen2 authentication - prioritize connection string, fallback to account key
+            if self.config.azure.connection_string:
+                # Use full connection string (recommended for ADLS Gen2)
+                self.connection.execute(f"""
+                    CREATE SECRET azure_secret (
+                        TYPE AZURE,
+                        CONNECTION_STRING '{self.config.azure.connection_string}'
+                    )
+                """)
+                logger.info("Azure ADLS Gen2 authentication configured with connection string")
+            elif self.config.azure.account_name and self.config.azure.account_key:
+                # Use account name and key for ADLS Gen2
+                connection_string = f"DefaultEndpointsProtocol=https;AccountName={self.config.azure.account_name};AccountKey={self.config.azure.account_key};EndpointSuffix=core.windows.net"
+                self.connection.execute(f"""
+                    CREATE SECRET azure_secret (
+                        TYPE AZURE,
+                        CONNECTION_STRING '{connection_string}'
+                    )
+                """)
+                logger.info("Azure ADLS Gen2 authentication configured with account key")
+            elif self.config.azure.sas_token:
+                # Fallback to SAS token (legacy blob storage support)
+                sas_token = self.config.azure.sas_token.lstrip('?')
+                connection_string = f"DefaultEndpointsProtocol=https;AccountName={self.config.azure.account_name};SharedAccessSignature={sas_token};EndpointSuffix=core.windows.net"
+                self.connection.execute(f"""
+                    CREATE SECRET azure_secret (
+                        TYPE AZURE,
+                        CONNECTION_STRING '{connection_string}'
+                    )
+                """)
+                logger.info("Azure authentication configured with SAS token (legacy mode)")
+            else:
+                raise ValueError("Azure authentication requires either connection_string, account_key, or sas_token")
     
     def query_sensor_data(self, 
                          sensors: List[str],
@@ -413,31 +436,31 @@ class UnifiedStorageBackend:
             agg_func = agg_functions.get(aggregation_method.lower(), 'AVG')
             
             if len(file_paths) == 1:
-                # For single file aggregated query
+                # For single file aggregated query - using DuckDB-compatible time windowing
                 query = f"""
                     SELECT 
-                        CAST(EXTRACT(epoch FROM time_bucket(INTERVAL '{interval_seconds} seconds', timestamp)) * 1000 AS BIGINT) as timestamp_ms,
+                        CAST((EXTRACT(epoch FROM timestamp)::bigint / {interval_seconds}) * {interval_seconds} * 1000 AS BIGINT) as timestamp_ms,
                         {agg_func}(value) as value,
                         first(sensor_name) as sensor_name,
                         first(asset_id) as asset_id
                     FROM ({files_clause})
                     WHERE timestamp >= '{start_time.isoformat()}'
                       AND timestamp <= '{end_time.isoformat()}'
-                    GROUP BY time_bucket(INTERVAL '{interval_seconds} seconds', timestamp)
+                    GROUP BY (EXTRACT(epoch FROM timestamp)::bigint / {interval_seconds})
                     ORDER BY timestamp_ms
                 """
             else:
-                # For multiple files aggregated query
+                # For multiple files aggregated query - using DuckDB-compatible time windowing
                 query = f"""
                     SELECT 
-                        CAST(EXTRACT(epoch FROM time_bucket(INTERVAL '{interval_seconds} seconds', timestamp)) * 1000 AS BIGINT) as timestamp_ms,
+                        CAST((EXTRACT(epoch FROM timestamp)::bigint / {interval_seconds}) * {interval_seconds} * 1000 AS BIGINT) as timestamp_ms,
                         {agg_func}(value) as value,
                         first(sensor_name) as sensor_name,
                         first(asset_id) as asset_id
                     FROM {files_clause}
                     WHERE timestamp >= '{start_time.isoformat()}'
                       AND timestamp <= '{end_time.isoformat()}'
-                    GROUP BY time_bucket(INTERVAL '{interval_seconds} seconds', timestamp)
+                    GROUP BY (EXTRACT(epoch FROM timestamp)::bigint / {interval_seconds})
                     ORDER BY timestamp_ms
                 """
         else:
@@ -542,9 +565,10 @@ class UnifiedStorageBackend:
             if self.config.storage_mode == StorageMode.AZURE:
                 health['azure_configured'] = bool(
                     self.config.azure.account_name and 
-                    self.config.azure.container_name and 
-                    self.config.azure.sas_token
+                    self.config.azure.file_system_name and 
+                    (self.config.azure.connection_string or self.config.azure.account_key or self.config.azure.sas_token)
                 )
+                health['adls_gen2_endpoint'] = self.config.azure.abfss_endpoint
             else:
                 health['local_path_exists'] = Path(self.config.local.data_path).exists()
             
