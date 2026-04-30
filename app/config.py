@@ -17,14 +17,23 @@ class StorageMode(Enum):
 class AzureConfig:
     """Azure Data Lake Storage Gen2 configuration."""
     account_name: str = ""
-    container_name: str = ""
+    file_system_name: str = ""  # ADLS Gen2 uses file systems instead of containers
+    account_key: str = ""       # Account key for authentication
+    connection_string: str = "" # Full connection string (alternative auth method)
+    data_prefix: str = ""       # Optional path prefix
+    
+    # Legacy support for SAS token (if needed)
     sas_token: str = ""
-    data_prefix: str = ""  # Optional path prefix
     
     @property
     def abfss_endpoint(self) -> str:
         """Get ADLS Gen2 endpoint URL."""
-        return f"abfss://{self.container_name}@{self.account_name}.dfs.core.windows.net"
+        return f"abfss://{self.file_system_name}@{self.account_name}.dfs.core.windows.net"
+    
+    @property  
+    def dfs_endpoint(self) -> str:
+        """Get DFS endpoint for ADLS Gen2."""
+        return f"https://{self.account_name}.dfs.core.windows.net"
 
 
 @dataclass
@@ -74,8 +83,10 @@ def load_config() -> AppConfig:
     
     azure_config = AzureConfig(
         account_name=os.getenv("AZURE_STORAGE_ACCOUNT", ""),
-        container_name=os.getenv("AZURE_CONTAINER_NAME", ""),
-        sas_token=os.getenv("AZURE_SAS_TOKEN", ""),
+        file_system_name=os.getenv("AZURE_FILE_SYSTEM_NAME", os.getenv("AZURE_CONTAINER_NAME", "")),
+        account_key=os.getenv("AZURE_ACCOUNT_KEY", ""),
+        connection_string=os.getenv("AZURE_CONNECTION_STRING", ""),
+        sas_token=os.getenv("AZURE_SAS_TOKEN", ""),  # Legacy support
         data_prefix=os.getenv("AZURE_DATA_PREFIX", "")
     )
     

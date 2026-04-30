@@ -1,0 +1,30 @@
+{
+  "generation_date": "2026-04-17T19:00:52.707242",
+  "start_date": "2026-04-04T00:00:00",
+  "num_days": 1,
+  "base_path": "test_data",
+  "sensors": [
+    "hf_rms_1hz_ch1",
+    "hf_rms_1hz_ch2",
+    "lps_ch1",
+    "lps_ch2",
+    "quad_ch1",
+    "quad_ch2",
+    "quad_ch3",
+    "quad_ch4",
+    "speed_1hz_ch1",
+    "speed_1hz_ch2",
+    "speed_200hz_ch1",
+    "speed_200hz_ch2"
+  ],
+  "assets": [
+    "c071ba1a-d9b0-5194-a4d6-4546feeb67ae"
+  ],
+  "statistics": {
+    "raw_files": 288,
+    "minute_files": 12,
+    "hourly_files": 12,
+    "daily_files": 12,
+    "total_raw_records": 35424000
+  }
+}

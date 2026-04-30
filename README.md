@@ -78,7 +78,7 @@ curl -X POST "http://localhost:8080/api/v2/aggregated" \
     "device": "0330372d-cfe9-4b44-bf3c-9906576b9fc2",
     "interval_ms": 240000,
     "max_data_points": 1000,
-    "aggregation_method": "mean"
+    "aggregation_method": "avg"
   }'
 ```
 
@@ -148,7 +148,7 @@ curl "http://localhost:8080/api/v2/health"
   "device": "device_id_or_asset_id",
   "interval_ms": 240000,
   "max_data_points": 1000,
-  "aggregation_method": "mean"
+  "aggregation_method": "avg"
 }
 ```
 
@@ -163,7 +163,7 @@ curl "http://localhost:8080/api/v2/health"
   "device": "device_id_or_asset_id",
   "sensor": "sensor_name",
   "interval_ms": 240000,
-  "aggregation_method": "mean",
+  "aggregation_method": "avg",
   "truncated": false,
   "truncated_end_time": null,
   "execution_time_ms": 127.3
